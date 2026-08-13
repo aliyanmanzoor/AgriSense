@@ -1,0 +1,42 @@
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap');
+@import "tailwindcss";
+
+@theme {
+  /* ── Design System Colors ── */
+  --color-olive:        #3D4A1F;
+  --color-olive-mid:   #4A5A26;
+  --color-olive-light: #5C6E30;
+  --color-wheat:       #C9A15C;
+  --color-wheat-light: #DDB97A;
+  --color-cream:       #F7F3EA;
+  --color-cream-dark:  #EDE8DC;
+  --color-card:        #FFFFFF;
+  --color-text:        #2B2B24;
+  --color-muted:       #6B6B5C;
+
+  /* ── Shadows ── */
+  --shadow-card:   0 4px 24px 0 rgba(61,74,31,0.10), 0 1.5px 6px 0 rgba(61,74,31,0.06);
+  --shadow-hero:   0 8px 40px 0 rgba(61,74,31,0.18), 0 2px 10px 0 rgba(61,74,31,0.10);
+  --shadow-btn:    0 4px 16px 0 rgba(61,74,31,0.25);
+  --shadow-input:  0 2px 8px 0 rgba(61,74,31,0.07);
+  --shadow-nav:    0 8px 32px 0 rgba(61,74,31,0.18);
+}
+
+* {
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  box-sizing: border-box;
+}
+
+body {
+  background-color: #F7F3EA;
+  font-family: 'Inter', 'Segoe UI', system-ui, sans-serif;
+  color: #2B2B24;
+}
+
+/* Scrollbar hide utility */
+.scrollbar-hide::-webkit-scrollbar { display: none; }
+.scrollbar-hide { -ms-overflow-style: none; scrollbar-width: none; }
+
+/* Smooth transitions globally */
+input, button, select { transition: all 0.18s ease; }
