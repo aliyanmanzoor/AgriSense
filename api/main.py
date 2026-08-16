@@ -414,27 +414,31 @@ async def detect_disease(farmer_id: int | None = None, file: UploadFile = File(.
 
 @app.post("/yield-prediction")
 def predict_yield(req: YieldPredictionRequest):
-    crop_encoded = 0 if req.crop_type.strip().lower() == "wheat" else 1
-    area_encoded = 72
-    year = 2026
-    
-    features = [[
-        crop_encoded,
-        area_encoded,
-        year,
-        req.rainfall,
-        req.pesticides,
-        req.avg_temp
-    ]]
-    
-    model = load_yield_model()
-    raw_yield_hg_ha = model.predict(features)[0]
-    yield_kg_ha = raw_yield_hg_ha * 0.1
-    
-    return {
-        "yield_kg_ha": yield_kg_ha
-    }
-
+    try:
+        crop_encoded = 0 if req.crop_type.strip().lower() == "wheat" else 1
+        area_encoded = 72
+        year = 2026
+        
+        features = [[
+            crop_encoded,
+            area_encoded,
+            year,
+            req.rainfall,
+            req.pesticides,
+            req.avg_temp
+        ]]
+        
+        model = load_yield_model()
+        raw_yield_hg_ha = model.predict(features)[0]
+        yield_kg_ha = raw_yield_hg_ha * 0.1
+        
+        return {
+            "yield_kg_ha": yield_kg_ha
+        }
+    except Exception:
+        import traceback
+        from fastapi.responses import JSONResponse
+        return JSONResponse(status_code=500, content={"error": traceback.format_exc()})
 
 @app.get("/notifications/{farmer_id}")
 def get_notifications(farmer_id: int):
