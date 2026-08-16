@@ -7,11 +7,11 @@ export default function AboutPage({ onBack }) {
   return (
     <div className="min-h-screen pb-10" style={{ background: '#F7F3EA' }}>
       <div className="pt-10 pb-6 rounded-b-[40px] shadow-sm relative overflow-hidden" style={{ background: '#3D4A1F' }}>
-        <div className="absolute top-[-20%] right-[-10%] w-64 h-64 rounded-full opacity-10" style={{ background: '#C9A15C' }} />
-        <div className="absolute bottom-[-10%] left-[-10%] w-40 h-40 rounded-full opacity-10" style={{ background: '#C9A15C' }} />
+        <div className="absolute top-[-20%] right-[-10%] w-64 h-64 rounded-full opacity-10 pointer-events-none" style={{ background: '#C9A15C' }} />
+        <div className="absolute bottom-[-10%] left-[-10%] w-40 h-40 rounded-full opacity-10 pointer-events-none" style={{ background: '#C9A15C' }} />
 
-        <div className="px-5 mb-4">
-          <button
+        <div className="px-5 mb-4 relative z-10">
+          <button type="button"
             onClick={onBack}
             className="w-11 h-11 rounded-full flex items-center justify-center transition-colors"
             style={{ color: '#F7F3EA', background: 'rgba(255,255,255,0.08)' }}

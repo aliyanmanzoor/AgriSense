@@ -118,11 +118,11 @@ export default function ChangePasswordPage({ farmerId, onBack }) {
         className="pt-10 pb-8 rounded-b-[40px] relative overflow-hidden"
         style={{ background: 'linear-gradient(135deg, #3D4A1F 0%, #5a6e2c 100%)', boxShadow: '0 8px 32px rgba(61,74,31,0.18)' }}
       >
-        <div className="absolute top-[-20%] right-[-10%] w-64 h-64 rounded-full opacity-10" style={{ background: '#C9A15C' }} />
-        <div className="absolute bottom-[-10%] left-[-10%] w-40 h-40 rounded-full opacity-10" style={{ background: '#C9A15C' }} />
+        <div className="absolute top-[-20%] right-[-10%] w-64 h-64 rounded-full opacity-10 pointer-events-none" style={{ background: '#C9A15C' }} />
+        <div className="absolute bottom-[-10%] left-[-10%] w-40 h-40 rounded-full opacity-10 pointer-events-none" style={{ background: '#C9A15C' }} />
 
-        <div className="px-5 mb-4">
-          <button
+        <div className="px-5 mb-4 relative z-10">
+          <button type="button"
             onClick={onBack}
             className="inline-flex items-center gap-2 px-4 py-2 rounded-full text-xs font-semibold transition-colors min-h-[44px]"
             style={{ color: '#F7F3EA', background: 'rgba(255,255,255,0.12)' }}
