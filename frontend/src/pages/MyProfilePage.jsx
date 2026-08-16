@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef } from 'react';
 import { ArrowLeft, User, Phone, MapPin, Upload } from 'lucide-react';
-import { getFarmer, uploadProfilePhoto } from '../api';
+import { getFarmer, uploadProfilePhoto, API_BASE } from '../api';
 import { useTranslation } from '../LanguageContext';
 
 const cardShadow = '0 4px 24px rgba(61,74,31,0.10), 0 1.5px 6px rgba(61,74,31,0.06)';
@@ -51,7 +51,7 @@ export default function MyProfilePage({ farmerId, onBack }) {
   if (!profile) return null;
 
   const initial = profile.name ? profile.name.charAt(0).toUpperCase() : '?';
-  const photoUrl = profile.profile_photo ? `http://localhost:8000/${profile.profile_photo}` : null;
+  const photoUrl = profile.profile_photo ? `${API_BASE}/${profile.profile_photo}` : null;
 
   return (
     <div className="min-h-screen pb-10" style={{ background: '#F7F3EA' }}>

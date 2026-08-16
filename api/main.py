@@ -314,10 +314,12 @@ def get_weather(farmer_id: int):
         # Log weather warnings if they aren't duplicate and weather alerts are enabled
         if should_send_notification(conn, farmer_id, "weather"):
             for w in warnings:
-                already_sent = conn.execute(
-                    "SELECT 1 FROM notifications WHERE farmer_id = ? AND message = ? AND type = 'warning' AND datetime(sent_at) > datetime('now', '-4 hours') LIMIT 1",
-                    (farmer_id, w["message"])
-                ).fetchone()
+                with conn.cursor() as cur:
+                    cur.execute(
+                        "SELECT 1 FROM notifications WHERE farmer_id = %s AND message = %s AND type = 'warning' AND sent_at > CURRENT_TIMESTAMP - INTERVAL '4 hours' LIMIT 1",
+                        (farmer_id, w["message"])
+                    )
+                    already_sent = cur.fetchone()
                 if not already_sent:
                     add_notification(conn, farmer_id, w["message"], "warning")
         

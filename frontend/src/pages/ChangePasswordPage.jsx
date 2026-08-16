@@ -1,6 +1,8 @@
 import { useState } from 'react';
 import { ArrowLeft, Lock, Eye, EyeOff, RefreshCw, CheckCircle } from 'lucide-react';
 import { useTranslation } from '../LanguageContext';
+import { API_BASE } from '../api';
+
 
 const cardShadow = '0 4px 24px rgba(61,74,31,0.10), 0 1.5px 6px rgba(61,74,31,0.06)';
 
@@ -84,7 +86,7 @@ export default function ChangePasswordPage({ farmerId, onBack }) {
 
     setLoading(true);
     try {
-      const res = await fetch(`http://localhost:8000/farmer/${farmerId}/change-password`, {
+      const res = await fetch(`${API_BASE}/farmer/${farmerId}/change-password`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ current_password: current, new_password: newPwd }),

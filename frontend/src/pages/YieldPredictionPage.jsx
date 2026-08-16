@@ -10,7 +10,7 @@ import {
   TrendingUp,
   Info,
 } from 'lucide-react';
-import { getFarmer, predictYield } from '../api';
+import { getFarmer, predictYield, API_BASE } from '../api';
 import { useTranslation } from '../LanguageContext';
 
 const cardShadow = '0 4px 24px rgba(61,74,31,0.10), 0 1.5px 6px rgba(61,74,31,0.06)';
@@ -37,7 +37,7 @@ export default function YieldPredictionPage({ farmerId, onBack }) {
     getFarmer(farmerId)
       .then(() => {
         // Fallback crop calendar call like in DashboardPage.jsx to fetch registered crop type
-        return fetch(`http://localhost:8000/crop-calendar/${farmerId}`)
+        return fetch(`${API_BASE}/crop-calendar/${farmerId}`)
           .then(r => r.json())
           .then(cal => {
             const first = cal?.crops?.[0];

@@ -14,7 +14,7 @@ import {
   TrendingUp,
   Settings,
 } from 'lucide-react';
-import { getFarmer } from '../api';
+import { getFarmer, API_BASE } from '../api';
 import wheatHero from '../assets/wheat_hero.png';
 import maizeHero from '../assets/maize_hero.png';
 import { useTranslation } from '../LanguageContext';
@@ -90,7 +90,7 @@ export default function DashboardPage({ farmerName, farmerId, onNavigate }) {
         setProfile(data);
         // The farmer profile doesn't include crop_type directly;
         // fall back to the crop-calendar endpoint via a second call.
-        return fetch(`http://localhost:8000/crop-calendar/${farmerId}`)
+        return fetch(`${API_BASE}/crop-calendar/${farmerId}`)
           .then(r => r.json())
           .then(cal => {
             const first = cal?.crops?.[0];
@@ -101,7 +101,7 @@ export default function DashboardPage({ farmerName, farmerId, onNavigate }) {
   }, [farmerId]);
 
   const cropPhoto = getCropPhoto(cropType);
-  const photoUrl = profile?.profile_photo ? `http://localhost:8000/${profile.profile_photo}` : null;
+  const photoUrl = profile?.profile_photo ? `${API_BASE}/${profile.profile_photo}` : null;
   const initial = profile?.name ? profile.name.charAt(0).toUpperCase() : (farmerName ? farmerName.charAt(0).toUpperCase() : '?');
 
   return (

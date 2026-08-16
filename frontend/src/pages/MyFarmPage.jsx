@@ -1,6 +1,8 @@
 import { useState, useEffect } from 'react';
 import { ArrowLeft, Save, Map, Sprout, Calendar, RefreshCw } from 'lucide-react';
 import { useTranslation } from '../LanguageContext';
+import { API_BASE } from '../api';
+
 
 const inputStyle = {
   width: '100%',
@@ -30,7 +32,7 @@ export default function MyFarmPage({ farmerId, onBack }) {
     let isMounted = true;
     async function fetchFarm() {
       try {
-        const response = await fetch(`http://localhost:8000/crop-calendar/${farmerId}`);
+        const response = await fetch(`${API_BASE}/crop-calendar/${farmerId}`);
         if (!response.ok) throw new Error('Failed to fetch farm data');
         const data = await response.json();
         
@@ -56,7 +58,7 @@ export default function MyFarmPage({ farmerId, onBack }) {
     setSuccess('');
     setSaving(true);
     try {
-      const response = await fetch(`http://localhost:8000/farmer/${farmerId}/crop`, {
+      const response = await fetch(`${API_BASE}/farmer/${farmerId}/crop`, {
         method: 'PATCH',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
