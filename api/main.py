@@ -443,3 +443,7 @@ def get_notifications(farmer_id: int):
     conn = get_connection()
     notifications = get_notifications_for_farmer(conn, farmer_id)
     return {"notifications": notifications}
+
+@app.get("/health")
+def health_check():
+    return {"status": "ok"}
