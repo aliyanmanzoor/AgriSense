@@ -380,23 +380,32 @@ def update_crop(farmer_id: int, req: CropUpdateRequest):
 async def detect_disease(farmer_id: int | None = None, file: UploadFile = File(...)):
     if not file.filename.lower().endswith(('.png', '.jpg', '.jpeg')):
         raise HTTPException(status_code=400, detail="Only images are allowed")
-        
+
+    # Read the upload bytes in async context (non-blocking).
     try:
         contents = await file.read()
         image = Image.open(io.BytesIO(contents)).convert("RGB")
     except Exception:
         raise HTTPException(status_code=400, detail="Invalid image file")
-        
-    model = load_model()
-    class_name, confidence = run_prediction(model, image)
-    
+
+    # Model loading and inference are CPU-bound and block the event loop.
+    # Offload them to FastAPI/Starlette's thread-pool so other requests
+    # (e.g. GET /farmer/{id}) are not frozen during inference.
+    from starlette.concurrency import run_in_threadpool
+
+    def _run_inference():
+        m = load_model()
+        return run_prediction(m, image)
+
+    class_name, confidence = await run_in_threadpool(_run_inference)
+
     if farmer_id is not None:
         conn = get_connection()
         # Log disease alerts if enabled
         if should_send_notification(conn, farmer_id, "disease"):
             friendly_name = clean_disease_label(class_name)
             is_healthy = "healthy" in class_name.lower()
-            
+
             if is_healthy:
                 msg = "Leaf scan complete: no disease detected"
                 notif_type = "info"
@@ -404,9 +413,9 @@ async def detect_disease(farmer_id: int | None = None, file: UploadFile = File(.
                 confidence_pct = int(confidence * 100) if confidence <= 1.0 else int(confidence)
                 msg = f"Disease detected: {friendly_name} ({confidence_pct}% confidence)"
                 notif_type = "warning"
-                
+
             add_notification(conn, farmer_id, msg, notif_type)
-    
+
     return {
         "class_name": class_name,
         "confidence": confidence
