@@ -6,6 +6,7 @@ Tables are created automatically on first import.
 """
 
 import os
+import time
 import psycopg2
 from psycopg2.extras import DictCursor
 from dotenv import load_dotenv
@@ -13,12 +14,29 @@ from dotenv import load_dotenv
 load_dotenv()
 
 def get_connection():
-    """Return a module-level PostgreSQL connection with DictCursor factory enabled."""
-    conn = psycopg2.connect(
-        os.environ.get("DATABASE_URL", "postgresql://localhost/agrisense"),
-        cursor_factory=DictCursor
-    )
-    return conn
+    """Return a fresh PostgreSQL connection with DictCursor factory enabled.
+
+    Retries up to 3 times on OperationalError (e.g. Neon cold-start SSL EOF)
+    with a 1-second back-off between attempts before finally re-raising.
+    """
+    _MAX_ATTEMPTS = 3
+    _RETRY_DELAY_S = 1
+
+    url = os.environ.get("DATABASE_URL", "postgresql://localhost/agrisense")
+    last_exc = None
+    for attempt in range(1, _MAX_ATTEMPTS + 1):
+        try:
+            conn = psycopg2.connect(url, cursor_factory=DictCursor)
+            return conn
+        except psycopg2.OperationalError as exc:
+            last_exc = exc
+            if attempt < _MAX_ATTEMPTS:
+                print(
+                    f"[db] Connection attempt {attempt}/{_MAX_ATTEMPTS} failed "
+                    f"({exc!r}). Retrying in {_RETRY_DELAY_S}s…"
+                )
+                time.sleep(_RETRY_DELAY_S)
+    raise last_exc
 
 
 def init_db(conn=None) -> None:
