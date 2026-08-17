@@ -33,6 +33,23 @@ from views.yield_prediction import load_yield_model
 
 app = FastAPI(title="AgriSense API")
 
+# ---------------------------------------------------------------------------
+# Disease-detection model singleton — loaded ONCE at startup, reused per request.
+# Keeps the Ultralytics initialisation out of the hot path entirely.
+# ---------------------------------------------------------------------------
+_disease_model = None
+
+@app.on_event("startup")
+def load_disease_model_on_startup():
+    global _disease_model
+    from views.disease_detection import MODEL_PATH
+    from ultralytics import YOLO
+    import logging
+    logging.getLogger("ultralytics").setLevel(logging.WARNING)
+    print("[startup] Loading YOLOv8 disease model…")
+    _disease_model = YOLO(str(MODEL_PATH))
+    print("[startup] Disease model loaded and ready.")
+
 # Allow CORS for local dev (React, etc)
 app.add_middleware(
     CORSMiddleware,
@@ -388,14 +405,18 @@ async def detect_disease(farmer_id: int | None = None, file: UploadFile = File(.
     except Exception:
         raise HTTPException(status_code=400, detail="Invalid image file")
 
-    # Model loading and inference are CPU-bound and block the event loop.
-    # Offload them to FastAPI/Starlette's thread-pool so other requests
-    # (e.g. GET /farmer/{id}) are not frozen during inference.
+    # Resize to YOLOv8's standard input size before inference to reduce peak
+    # memory during the forward pass. Keeps the aspect ratio intact.
+    MAX_DIM = 640
+    if image.width > MAX_DIM or image.height > MAX_DIM:
+        image.thumbnail((MAX_DIM, MAX_DIM), Image.LANCZOS)
+
+    # Model inference is CPU-bound; offload to a thread-pool so the event
+    # loop stays free for other requests (e.g. GET /farmer/{id}).
     from starlette.concurrency import run_in_threadpool
 
     def _run_inference():
-        m = load_model()
-        return run_prediction(m, image)
+        return run_prediction(_disease_model, image)
 
     class_name, confidence = await run_in_threadpool(_run_inference)
 
