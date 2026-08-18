@@ -80,11 +80,16 @@ const QUICK_ICONS = [
 
 export default function DashboardPage({ farmerName, farmerId, onNavigate }) {
   const { t } = useTranslation();
-  const [cropType, setCropType] = useState('Wheat');
+  const [cropType, setCropType] = useState(null);
   const [profile, setProfile] = useState(null);
+  const [loadingCrop, setLoadingCrop] = useState(true);
 
   useEffect(() => {
-    if (!farmerId) return;
+    if (!farmerId) {
+      setLoadingCrop(false);
+      return;
+    }
+    setLoadingCrop(true);
     getFarmer(farmerId)
       .then((data) => {
         setProfile(data);
@@ -95,9 +100,11 @@ export default function DashboardPage({ farmerName, farmerId, onNavigate }) {
           .then(cal => {
             const first = cal?.crops?.[0];
             if (first?.crop_type) setCropType(first.crop_type);
+            else setCropType('Wheat');
           });
       })
-      .catch(() => { /* keep default */ });
+      .catch(() => { setCropType('Wheat'); })
+      .finally(() => { setLoadingCrop(false); });
   }, [farmerId]);
 
   const cropPhoto = getCropPhoto(cropType);
@@ -236,7 +243,7 @@ export default function DashboardPage({ farmerName, farmerId, onNavigate }) {
             style={{ borderTop: '1px solid rgba(255,255,255,0.10)' }}
           >
             {[
-              { label: 'Crop',   value: cropType },
+              { label: 'Crop',   value: loadingCrop ? '...' : cropType },
               { label: 'Season', value: 'Rabi' },
               { label: 'Status', value: 'Growing' },
             ].map(s => (
@@ -253,24 +260,32 @@ export default function DashboardPage({ farmerName, farmerId, onNavigate }) {
         {/* ── Crop photo card ── */}
         <div
           className="rounded-3xl overflow-hidden relative h-52"
-          style={{ boxShadow: heroShadow }}
+          style={{ boxShadow: heroShadow, background: '#3D4A1F' }}
         >
-          <img
-            src={cropPhoto}
-            alt={`${cropType} crop`}
-            className="w-full h-full object-cover"
-          />
-          <div className="absolute inset-0" style={{ background: 'linear-gradient(to top, rgba(30,24,10,0.80) 0%, rgba(30,24,10,0.20) 55%, transparent 100%)' }} />
-          <div className="absolute bottom-0 left-0 right-0 p-5">
-            <span
-              className="inline-block text-xs font-bold px-3 py-1 rounded-full mb-2 uppercase tracking-widest"
-              style={{ background: '#C9A15C', color: '#2B2B24' }}
-            >
-              {t.dashboard.yourCrop}
-            </span>
-            <h3 className="text-white text-xl font-bold tracking-tight">{cropType}</h3>
-            <p className="text-white/60 text-xs mt-0.5">{t.dashboard.cropHint}</p>
-          </div>
+          {!loadingCrop && cropType ? (
+            <>
+              <img
+                src={cropPhoto}
+                alt={`${cropType} crop`}
+                className="w-full h-full object-cover transition-opacity duration-300"
+              />
+              <div className="absolute inset-0" style={{ background: 'linear-gradient(to top, rgba(30,24,10,0.80) 0%, rgba(30,24,10,0.20) 55%, transparent 100%)' }} />
+              <div className="absolute bottom-0 left-0 right-0 p-5">
+                <span
+                  className="inline-block text-xs font-bold px-3 py-1 rounded-full mb-2 uppercase tracking-widest"
+                  style={{ background: '#C9A15C', color: '#2B2B24' }}
+                >
+                  {t.dashboard.yourCrop}
+                </span>
+                <h3 className="text-white text-xl font-bold tracking-tight">{cropType}</h3>
+                <p className="text-white/60 text-xs mt-0.5">{t.dashboard.cropHint}</p>
+              </div>
+            </>
+          ) : (
+            <div className="absolute inset-0 flex items-center justify-center">
+              <div className="animate-spin w-8 h-8 border-4 border-white/20 border-t-white rounded-full"></div>
+            </div>
+          )}
         </div>
 
         {/* ── Quick actions section ── */}

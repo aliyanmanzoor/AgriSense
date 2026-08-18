@@ -124,7 +124,7 @@ export default function MyFarmPage({ farmerId, onBack }) {
                   onBlur={onBlur}
                 >
                   <option value="Wheat">Wheat</option>
-                  <option value="Corn (maize)">Corn (maize)</option>
+                  <option value="Maize">Maize</option>
                 </select>
               </div>
             </div>
