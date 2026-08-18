@@ -140,8 +140,8 @@ def should_send_notification(conn, farmer_id: int, category: str) -> bool:
 @app.post("/auth/register")
 def register(req: RegisterRequest):
     conn = get_connection()
-    
-    # Check location via Nominatim (reusing logic pattern from onboarding)
+
+    # ── Geocoding via Nominatim (non-blocking: failures do not abort registration) ──
     search_query = (
         f"{req.location.strip()}, Pakistan"
         if "pakistan" not in req.location.strip().lower()
@@ -152,40 +152,56 @@ def register(req: RegisterRequest):
         "Accept-Language": "en",
     }
     params = {"q": search_query, "format": "json"}
-    
+
+    lat, lon = None, None
+    geo_ok = False
+
     try:
+        print(f"[DEBUG] Geocoding '{search_query}' via Nominatim...", flush=True)
         res = requests.get(
             "https://nominatim.openstreetmap.org/search",
             params=params,
             headers=headers,
             timeout=10,
         )
+        print(f"[DEBUG] Nominatim responded: HTTP {res.status_code}", flush=True)
         geo_data = res.json() if res.status_code == 200 else []
-    except Exception:
-        geo_data = []
 
-    if not geo_data or not isinstance(geo_data, list) or len(geo_data) == 0:
-        raise HTTPException(status_code=400, detail="Could not find location coordinates.")
+        if geo_data and isinstance(geo_data, list) and len(geo_data) > 0:
+            lat = float(geo_data[0]["lat"])
+            lon = float(geo_data[0]["lon"])
+            display_name = geo_data[0].get("display_name", "").lower()
 
-    lat = float(geo_data[0]["lat"])
-    lon = float(geo_data[0]["lon"])
-    display_name = geo_data[0].get("display_name", "").lower()
+            typed_words = [
+                w.lower() for w in re.findall(r"\w+", req.location) if w.lower() != "pakistan"
+            ]
+            name_matched = any(w in display_name for w in typed_words)
+            country_part = display_name.split(",")[-1].strip()
 
-    typed_words = [
-        w.lower() for w in re.findall(r"\w+", req.location) if w.lower() != "pakistan"
-    ]
-    name_matched = any(w in display_name for w in typed_words)
-    country_part = display_name.split(",")[-1].strip()
-    
-    if not name_matched or country_part != "pakistan":
-        raise HTTPException(status_code=400, detail="Location not found in Pakistan.")
+            if not name_matched or country_part != "pakistan":
+                raise HTTPException(status_code=400, detail="Location not found in Pakistan. Please check the spelling.")
+
+            geo_ok = True
+            print(f"[DEBUG] Geocoding success: lat={lat}, lon={lon}", flush=True)
+        else:
+            # Nominatim returned no results — warn but still register
+            print("[DEBUG] Nominatim returned no results; proceeding without coordinates.", flush=True)
+
+    except HTTPException:
+        raise  # re-raise location validation errors
+    except Exception as e:
+        # Network timeout, connection reset, etc. — do not block registration
+        print(f"[DEBUG] Nominatim request failed ({type(e).__name__}: {e}); proceeding without coordinates.", flush=True)
 
     pwd_hash = bcrypt.hashpw(req.password.encode("utf-8"), bcrypt.gensalt()).decode("utf-8")
-    
+
     farmer_id = add_farmer(conn, req.name.strip(), req.phone.strip(), req.location.strip(), password_hash=pwd_hash)
     add_crop(conn, farmer_id, req.crop_type.strip(), req.planting_date, req.farm_size)
-    add_location(conn, farmer_id, lat, lon, req.location.strip())
-    
+
+    # Only store coordinates if geocoding succeeded
+    if geo_ok and lat is not None and lon is not None:
+        add_location(conn, farmer_id, lat, lon, req.location.strip())
+
     # Log registration notification (general update category)
     if should_send_notification(conn, farmer_id, "general"):
         add_notification(
@@ -194,7 +210,7 @@ def register(req: RegisterRequest):
             f"Welcome to AgriSense, {req.name.strip()}! Your {req.crop_type.strip()} crop has been registered.",
             "info"
         )
-    
+
     return {"farmer_id": farmer_id, "message": "Registered successfully"}
 
 
