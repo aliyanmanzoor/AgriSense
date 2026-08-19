@@ -7,8 +7,7 @@ import requests
 import re
 from datetime import datetime, date
 from pathlib import Path
-from PIL import Image
-import io
+import httpx
 
 from database import (
     get_connection,
@@ -28,28 +27,10 @@ from database import (
 
 from views.weather import fetch_weather, _get_warnings
 from views.crop_calendar import calculate_crop_stage
-from views.disease_detection import load_model, run_prediction, CLASS_INFO
+from views.disease_detection import CLASS_INFO
 from views.yield_prediction import load_yield_model
 
 app = FastAPI(title="AgriSense API")
-
-# ---------------------------------------------------------------------------
-# Disease-detection model singleton — lazy-loaded on first request, then
-# reused for every subsequent call. Avoids loading the model at boot time
-# (which can exhaust memory on constrained hosts before any request arrives).
-# ---------------------------------------------------------------------------
-_disease_model = None
-
-def _get_disease_model():
-    """Return the cached YOLOv8 model, loading from disk on the very first call."""
-    global _disease_model
-    if _disease_model is None:
-        from views.disease_detection import MODEL_PATH
-        from ultralytics import YOLO
-        import logging
-        logging.getLogger("ultralytics").setLevel(logging.WARNING)
-        _disease_model = YOLO(str(MODEL_PATH))
-    return _disease_model
 
 # Allow CORS for local dev (React, etc)
 app.add_middleware(
@@ -413,27 +394,26 @@ async def detect_disease(farmer_id: int | None = None, file: UploadFile = File(.
     if not file.filename.lower().endswith(('.png', '.jpg', '.jpeg')):
         raise HTTPException(status_code=400, detail="Only images are allowed")
 
-    # Read the upload bytes in async context (non-blocking).
     try:
         contents = await file.read()
-        image = Image.open(io.BytesIO(contents)).convert("RGB")
     except Exception:
         raise HTTPException(status_code=400, detail="Invalid image file")
 
-    # Resize to YOLOv8's standard input size before inference to reduce peak
-    # memory during the forward pass. Keeps the aspect ratio intact.
-    MAX_DIM = 640
-    if image.width > MAX_DIM or image.height > MAX_DIM:
-        image.thumbnail((MAX_DIM, MAX_DIM), Image.LANCZOS)
-
-    # Model inference is CPU-bound; offload to a thread-pool so the event
-    # loop stays free for other requests (e.g. GET /farmer/{id}).
-    from starlette.concurrency import run_in_threadpool
-
-    def _run_inference():
-        return run_prediction(_get_disease_model(), image)
-
-    class_name, confidence = await run_in_threadpool(_run_inference)
+    MODAL_URL = "https://aliyanmanzoor--agrisense-disease-detection-detect.modal.run"
+    try:
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            resp = await client.post(
+                MODAL_URL,
+                content=contents,
+                headers={"Content-Type": "application/octet-stream"}
+            )
+            resp.raise_for_status()
+            result = resp.json()
+            class_name = result["class_name"]
+            confidence = result["confidence"]
+    except Exception as e:
+        print(f"Modal inference failed: {e}")
+        raise HTTPException(status_code=500, detail="Failed to run disease detection")
 
     if farmer_id is not None:
         conn = get_connection()

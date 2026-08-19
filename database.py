@@ -1,35 +1,44 @@
 """
-AgriSense — SQLite database setup and CRUD helpers.
+AgriSense — PostgreSQL database setup and CRUD helpers.
 
 All functions accept a connection obtained via get_connection().
 Tables are created automatically on first import via init_db().
 """
 
-import sqlite3
-from pathlib import Path
+import os
+import time
+import psycopg2
+import psycopg2.extras
+from dotenv import load_dotenv
 
-DB_PATH = Path(__file__).parent / "agrisense.db"
+load_dotenv()
 
+DATABASE_URL = os.getenv("DATABASE_URL")
 
-def get_connection() -> sqlite3.Connection:
-    """Return a SQLite connection with row_factory set for dict-like access."""
-    conn = sqlite3.connect(str(DB_PATH))
-    conn.row_factory = sqlite3.Row
-    conn.execute("PRAGMA journal_mode=WAL")   # better concurrent read performance
-    conn.execute("PRAGMA foreign_keys=ON")
-    return conn
-
+def get_connection():
+    """Return a PostgreSQL connection with DictCursor."""
+    attempts = 3
+    delay = 1
+    for i in range(attempts):
+        try:
+            conn = psycopg2.connect(DATABASE_URL, cursor_factory=psycopg2.extras.DictCursor)
+            return conn
+        except psycopg2.OperationalError as e:
+            if i < attempts - 1:
+                time.sleep(delay)
+            else:
+                raise e
 
 def init_db(conn=None) -> None:
-    """Create all tables if they don\'t already exist."""
+    """Create all tables if they don't already exist."""
     if conn is None:
         conn = get_connection()
     cur = conn.cursor()
 
-    cur.executescript(
+    cur.execute(
         """
         CREATE TABLE IF NOT EXISTS farmers (
-            id                 INTEGER PRIMARY KEY AUTOINCREMENT,
+            id                 SERIAL PRIMARY KEY,
             name               TEXT    NOT NULL,
             phone              TEXT,
             location           TEXT,
@@ -37,11 +46,11 @@ def init_db(conn=None) -> None:
             profile_photo      TEXT,
             is_active          INTEGER NOT NULL DEFAULT 1,
             notification_prefs TEXT    NOT NULL DEFAULT '{"weather": true, "disease": true, "general": true}',
-            created_at         TEXT    NOT NULL DEFAULT (datetime('now'))
+            created_at         TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
         );
 
         CREATE TABLE IF NOT EXISTS crops (
-            id            INTEGER PRIMARY KEY AUTOINCREMENT,
+            id            SERIAL PRIMARY KEY,
             farmer_id     INTEGER NOT NULL REFERENCES farmers(id),
             crop_type     TEXT    NOT NULL,
             planting_date TEXT,
@@ -49,7 +58,7 @@ def init_db(conn=None) -> None:
         );
 
         CREATE TABLE IF NOT EXISTS locations (
-            id          INTEGER PRIMARY KEY AUTOINCREMENT,
+            id          SERIAL PRIMARY KEY,
             farmer_id   INTEGER NOT NULL REFERENCES farmers(id),
             latitude    REAL    NOT NULL,
             longitude   REAL    NOT NULL,
@@ -57,7 +66,7 @@ def init_db(conn=None) -> None:
         );
 
         CREATE TABLE IF NOT EXISTS growth_stages (
-            id         INTEGER PRIMARY KEY AUTOINCREMENT,
+            id         SERIAL PRIMARY KEY,
             crop_id    INTEGER NOT NULL REFERENCES crops(id),
             stage_name TEXT    NOT NULL,
             start_date TEXT,
@@ -65,17 +74,19 @@ def init_db(conn=None) -> None:
         );
 
         CREATE TABLE IF NOT EXISTS notifications (
-            id        INTEGER PRIMARY KEY AUTOINCREMENT,
+            id        SERIAL PRIMARY KEY,
             farmer_id INTEGER NOT NULL REFERENCES farmers(id),
             message   TEXT    NOT NULL,
-            sent_at   TEXT    NOT NULL DEFAULT (datetime('now')),
+            sent_at   TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
             type      TEXT
         );
         """
     )
-
-    # Add columns to existing tables if missing (safe ALTER TABLE approach)
-    existing = {row[1] for row in cur.execute("PRAGMA table_info(farmers)")}
+    
+    # Add columns to existing tables if missing
+    cur.execute("SELECT column_name FROM information_schema.columns WHERE table_name='farmers'")
+    existing = {row[0] for row in cur.fetchall()}
+    
     for col, defn in [
         ("password_hash",      "TEXT"),
         ("profile_photo",      "TEXT"),
@@ -83,10 +94,15 @@ def init_db(conn=None) -> None:
         ("notification_prefs", "TEXT NOT NULL DEFAULT '{}'"),
     ]:
         if col not in existing:
-            cur.execute(f"ALTER TABLE farmers ADD COLUMN {col} {defn}")
+            try:
+                cur.execute(f"ALTER TABLE farmers ADD COLUMN {col} {defn}")
+            except Exception as e:
+                print(f"Skipping alter table: {e}")
+                conn.rollback()
+            else:
+                conn.commit()
 
     conn.commit()
-
 
 # ---------------------------------------------------------------------------
 # CRUD — Farmers
@@ -100,64 +116,67 @@ def add_farmer(
     password_hash: str | None = None,
     notification_prefs: str = '{"weather": true, "disease": true, "general": true}'
 ) -> int:
-    """Insert a new farmer and return the new row id."""
-    cur = conn.execute(
-        "INSERT INTO farmers (name, phone, location, password_hash, notification_prefs) VALUES (?, ?, ?, ?, ?)",
+    cur = conn.cursor()
+    cur.execute(
+        "INSERT INTO farmers (name, phone, location, password_hash, notification_prefs) VALUES (%s, %s, %s, %s, %s) RETURNING id",
         (name, phone, location, password_hash, notification_prefs),
     )
+    new_id = cur.fetchone()[0]
     conn.commit()
-    return cur.lastrowid
+    return new_id
 
 
 def get_all_farmers(conn) -> list[dict]:
-    """Return every farmer as a list of dicts."""
-    rows = conn.execute("SELECT * FROM farmers ORDER BY id").fetchall()
-    return [dict(r) for r in rows]
+    cur = conn.cursor()
+    cur.execute("SELECT * FROM farmers ORDER BY id")
+    return [dict(r) for r in cur.fetchall()]
 
 
 def get_farmer(conn, farmer_id: int) -> dict | None:
-    """Return a single farmer by id, or None."""
-    row = conn.execute("SELECT * FROM farmers WHERE id = ?", (farmer_id,)).fetchone()
+    cur = conn.cursor()
+    cur.execute("SELECT * FROM farmers WHERE id = %s", (farmer_id,))
+    row = cur.fetchone()
     return dict(row) if row else None
 
 
 def get_farmer_by_phone(conn, phone: str) -> dict | None:
-    """Return a single farmer by phone number, or None."""
-    row = conn.execute("SELECT * FROM farmers WHERE phone = ?", (phone,)).fetchone()
+    cur = conn.cursor()
+    cur.execute("SELECT * FROM farmers WHERE phone = %s", (phone,))
+    row = cur.fetchone()
     return dict(row) if row else None
 
 
 def update_farmer_photo(conn, farmer_id: int, photo_path: str) -> None:
-    """Update the profile_photo path for a farmer."""
-    conn.execute(
-        "UPDATE farmers SET profile_photo = ? WHERE id = ?",
+    cur = conn.cursor()
+    cur.execute(
+        "UPDATE farmers SET profile_photo = %s WHERE id = %s",
         (photo_path, farmer_id),
     )
     conn.commit()
 
 
 def update_farmer_password(conn, farmer_id: int, password_hash: str) -> None:
-    """Update the password_hash for a farmer."""
-    conn.execute(
-        "UPDATE farmers SET password_hash = ? WHERE id = ?",
+    cur = conn.cursor()
+    cur.execute(
+        "UPDATE farmers SET password_hash = %s WHERE id = %s",
         (password_hash, farmer_id),
     )
     conn.commit()
 
 
 def deactivate_farmer(conn, farmer_id: int) -> None:
-    """Set is_active to 0 (False) for a farmer."""
-    conn.execute(
-        "UPDATE farmers SET is_active = 0 WHERE id = ?",
+    cur = conn.cursor()
+    cur.execute(
+        "UPDATE farmers SET is_active = 0 WHERE id = %s",
         (farmer_id,),
     )
     conn.commit()
 
 
 def update_farmer_notification_prefs(conn, farmer_id: int, prefs_json: str) -> None:
-    """Update notification_prefs JSON string for a farmer."""
-    conn.execute(
-        "UPDATE farmers SET notification_prefs = ? WHERE id = ?",
+    cur = conn.cursor()
+    cur.execute(
+        "UPDATE farmers SET notification_prefs = %s WHERE id = %s",
         (prefs_json, farmer_id),
     )
     conn.commit()
@@ -174,19 +193,22 @@ def add_crop(
     planting_date: str = "",
     farm_size: float | None = None,
 ) -> int:
-    cur = conn.execute(
-        "INSERT INTO crops (farmer_id, crop_type, planting_date, farm_size) VALUES (?, ?, ?, ?)",
+    cur = conn.cursor()
+    cur.execute(
+        "INSERT INTO crops (farmer_id, crop_type, planting_date, farm_size) VALUES (%s, %s, %s, %s) RETURNING id",
         (farmer_id, crop_type, planting_date, farm_size),
     )
+    new_id = cur.fetchone()[0]
     conn.commit()
-    return cur.lastrowid
+    return new_id
 
 
 def get_crops_for_farmer(conn, farmer_id: int) -> list[dict]:
-    rows = conn.execute(
-        "SELECT * FROM crops WHERE farmer_id = ? ORDER BY id", (farmer_id,)
-    ).fetchall()
-    return [dict(r) for r in rows]
+    cur = conn.cursor()
+    cur.execute(
+        "SELECT * FROM crops WHERE farmer_id = %s ORDER BY id", (farmer_id,)
+    )
+    return [dict(r) for r in cur.fetchall()]
 
 
 def update_crop_for_farmer(
@@ -196,11 +218,12 @@ def update_crop_for_farmer(
     planting_date: str,
     farm_size: float,
 ) -> None:
-    conn.execute(
+    cur = conn.cursor()
+    cur.execute(
         """
         UPDATE crops
-        SET crop_type = ?, planting_date = ?, farm_size = ?
-        WHERE id = (SELECT id FROM crops WHERE farmer_id = ? ORDER BY id LIMIT 1)
+        SET crop_type = %s, planting_date = %s, farm_size = %s
+        WHERE id = (SELECT id FROM crops WHERE farmer_id = %s ORDER BY id LIMIT 1)
         """,
         (crop_type, planting_date, farm_size, farmer_id),
     )
@@ -218,19 +241,22 @@ def add_location(
     longitude: float,
     region_name: str = "",
 ) -> int:
-    cur = conn.execute(
-        "INSERT INTO locations (farmer_id, latitude, longitude, region_name) VALUES (?, ?, ?, ?)",
+    cur = conn.cursor()
+    cur.execute(
+        "INSERT INTO locations (farmer_id, latitude, longitude, region_name) VALUES (%s, %s, %s, %s) RETURNING id",
         (farmer_id, latitude, longitude, region_name),
     )
+    new_id = cur.fetchone()[0]
     conn.commit()
-    return cur.lastrowid
+    return new_id
 
 
 def get_locations_for_farmer(conn, farmer_id: int) -> list[dict]:
-    rows = conn.execute(
-        "SELECT * FROM locations WHERE farmer_id = ? ORDER BY id", (farmer_id,)
-    ).fetchall()
-    return [dict(r) for r in rows]
+    cur = conn.cursor()
+    cur.execute(
+        "SELECT * FROM locations WHERE farmer_id = %s ORDER BY id", (farmer_id,)
+    )
+    return [dict(r) for r in cur.fetchall()]
 
 
 # ---------------------------------------------------------------------------
@@ -244,19 +270,22 @@ def add_growth_stage(
     start_date: str = "",
     end_date: str = "",
 ) -> int:
-    cur = conn.execute(
-        "INSERT INTO growth_stages (crop_id, stage_name, start_date, end_date) VALUES (?, ?, ?, ?)",
+    cur = conn.cursor()
+    cur.execute(
+        "INSERT INTO growth_stages (crop_id, stage_name, start_date, end_date) VALUES (%s, %s, %s, %s) RETURNING id",
         (crop_id, stage_name, start_date, end_date),
     )
+    new_id = cur.fetchone()[0]
     conn.commit()
-    return cur.lastrowid
+    return new_id
 
 
 def get_growth_stages_for_crop(conn, crop_id: int) -> list[dict]:
-    rows = conn.execute(
-        "SELECT * FROM growth_stages WHERE crop_id = ? ORDER BY id", (crop_id,)
-    ).fetchall()
-    return [dict(r) for r in rows]
+    cur = conn.cursor()
+    cur.execute(
+        "SELECT * FROM growth_stages WHERE crop_id = %s ORDER BY id", (crop_id,)
+    )
+    return [dict(r) for r in cur.fetchall()]
 
 
 # ---------------------------------------------------------------------------
@@ -269,20 +298,23 @@ def add_notification(
     message: str,
     notif_type: str = "info",
 ) -> int:
-    cur = conn.execute(
-        "INSERT INTO notifications (farmer_id, message, type) VALUES (?, ?, ?)",
+    cur = conn.cursor()
+    cur.execute(
+        "INSERT INTO notifications (farmer_id, message, type) VALUES (%s, %s, %s) RETURNING id",
         (farmer_id, message, notif_type),
     )
+    new_id = cur.fetchone()[0]
     conn.commit()
-    return cur.lastrowid
+    return new_id
 
 
 def get_notifications_for_farmer(conn, farmer_id: int) -> list[dict]:
-    rows = conn.execute(
-        "SELECT * FROM notifications WHERE farmer_id = ? ORDER BY sent_at DESC",
+    cur = conn.cursor()
+    cur.execute(
+        "SELECT * FROM notifications WHERE farmer_id = %s ORDER BY sent_at DESC",
         (farmer_id,),
-    ).fetchall()
-    return [dict(r) for r in rows]
+    )
+    return [dict(r) for r in cur.fetchall()]
 
 
 # Auto-initialise on import so the DB is always ready.
