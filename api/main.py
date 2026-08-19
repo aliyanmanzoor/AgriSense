@@ -2,12 +2,14 @@ from fastapi import FastAPI, HTTPException, UploadFile, File
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
+from starlette.concurrency import run_in_threadpool
 import bcrypt
 import requests
 import re
 from datetime import datetime, date
 from pathlib import Path
 import httpx
+import json
 
 from database import (
     get_connection,
@@ -58,8 +60,6 @@ def clean_disease_label(raw_label: str) -> str:
     clean = clean.replace("_", " ")
     clean = re.sub(r"\s+", " ", clean).strip()
     return clean.title()
-
-import json
 
 # ---------------------------------------------------------------------------
 # Models
@@ -119,8 +119,8 @@ def should_send_notification(conn, farmer_id: int, category: str) -> bool:
 # ---------------------------------------------------------------------------
 
 @app.post("/auth/register")
-def register(req: RegisterRequest):
-    conn = get_connection()
+async def register(req: RegisterRequest):
+    conn = await run_in_threadpool(get_connection)
 
     # ── Geocoding via Nominatim (non-blocking: failures do not abort registration) ──
     search_query = (
@@ -139,12 +139,16 @@ def register(req: RegisterRequest):
 
     try:
         print(f"[DEBUG] Geocoding '{search_query}' via Nominatim...", flush=True)
-        res = requests.get(
-            "https://nominatim.openstreetmap.org/search",
-            params=params,
-            headers=headers,
-            timeout=10,
-        )
+
+        def _geocode():
+            return requests.get(
+                "https://nominatim.openstreetmap.org/search",
+                params=params,
+                headers=headers,
+                timeout=10,
+            )
+
+        res = await run_in_threadpool(_geocode)
         print(f"[DEBUG] Nominatim responded: HTTP {res.status_code}", flush=True)
         geo_data = res.json() if res.status_code == 200 else []
 
@@ -174,48 +178,49 @@ def register(req: RegisterRequest):
         # Network timeout, connection reset, etc. — do not block registration
         print(f"[DEBUG] Nominatim request failed ({type(e).__name__}: {e}); proceeding without coordinates.", flush=True)
 
-    pwd_hash = bcrypt.hashpw(req.password.encode("utf-8"), bcrypt.gensalt()).decode("utf-8")
+    def _hash_and_save():
+        pwd_hash = bcrypt.hashpw(req.password.encode("utf-8"), bcrypt.gensalt()).decode("utf-8")
+        farmer_id = add_farmer(conn, req.name.strip(), req.phone.strip(), req.location.strip(), password_hash=pwd_hash)
+        add_crop(conn, farmer_id, req.crop_type.strip(), req.planting_date, req.farm_size)
+        # Only store coordinates if geocoding succeeded
+        if geo_ok and lat is not None and lon is not None:
+            add_location(conn, farmer_id, lat, lon, req.location.strip())
+        # Log registration notification (general update category)
+        if should_send_notification(conn, farmer_id, "general"):
+            add_notification(
+                conn,
+                farmer_id,
+                f"Welcome to AgriSense, {req.name.strip()}! Your {req.crop_type.strip()} crop has been registered.",
+                "info"
+            )
+        return farmer_id
 
-    farmer_id = add_farmer(conn, req.name.strip(), req.phone.strip(), req.location.strip(), password_hash=pwd_hash)
-    add_crop(conn, farmer_id, req.crop_type.strip(), req.planting_date, req.farm_size)
-
-    # Only store coordinates if geocoding succeeded
-    if geo_ok and lat is not None and lon is not None:
-        add_location(conn, farmer_id, lat, lon, req.location.strip())
-
-    # Log registration notification (general update category)
-    if should_send_notification(conn, farmer_id, "general"):
-        add_notification(
-            conn,
-            farmer_id,
-            f"Welcome to AgriSense, {req.name.strip()}! Your {req.crop_type.strip()} crop has been registered.",
-            "info"
-        )
-
+    farmer_id = await run_in_threadpool(_hash_and_save)
     return {"farmer_id": farmer_id, "message": "Registered successfully"}
 
 
 @app.post("/auth/login")
-def login(req: LoginRequest):
-    conn = get_connection()
-    farmer = get_farmer_by_phone(conn, req.phone)
-    if not farmer or not farmer.get("password_hash"):
-        raise HTTPException(status_code=401, detail="Invalid phone number or password")
-    
-    # Reject login if the account is deactivated
-    if not farmer.get("is_active", 1):
-        raise HTTPException(status_code=403, detail="This account has been deactivated.")
-        
-    if bcrypt.checkpw(req.password.encode("utf-8"), farmer["password_hash"].encode("utf-8")):
-        return {"farmer_id": farmer["id"], "farmer_name": farmer["name"]}
-    else:
-        raise HTTPException(status_code=401, detail="Invalid phone number or password")
+async def login(req: LoginRequest):
+    def _do_login():
+        conn = get_connection()
+        farmer = get_farmer_by_phone(conn, req.phone)
+        if not farmer or not farmer.get("password_hash"):
+            raise HTTPException(status_code=401, detail="Invalid phone number or password")
+        # Reject login if the account is deactivated
+        if not farmer.get("is_active", 1):
+            raise HTTPException(status_code=403, detail="This account has been deactivated.")
+        if bcrypt.checkpw(req.password.encode("utf-8"), farmer["password_hash"].encode("utf-8")):
+            return {"farmer_id": farmer["id"], "farmer_name": farmer["name"]}
+        else:
+            raise HTTPException(status_code=401, detail="Invalid phone number or password")
+
+    return await run_in_threadpool(_do_login)
 
 
 @app.get("/farmer/{farmer_id}")
-def get_farmer_profile(farmer_id: int):
-    conn = get_connection()
-    farmer = get_farmer(conn, farmer_id)
+async def get_farmer_profile(farmer_id: int):
+    conn = await run_in_threadpool(get_connection)
+    farmer = await run_in_threadpool(get_farmer, conn, farmer_id)
     if not farmer:
         raise HTTPException(status_code=404, detail="Farmer not found")
     # Remove password hash from response
@@ -224,25 +229,39 @@ def get_farmer_profile(farmer_id: int):
 
 
 @app.post("/farmer/{farmer_id}/change-password")
-def change_password(farmer_id: int, req: ChangePasswordRequest):
-    conn = get_connection()
-    farmer = get_farmer(conn, farmer_id)
+async def change_password(farmer_id: int, req: ChangePasswordRequest):
+    conn = await run_in_threadpool(get_connection)
+    farmer = await run_in_threadpool(get_farmer, conn, farmer_id)
     if not farmer:
         raise HTTPException(status_code=404, detail="Farmer not found")
 
     stored_hash = farmer.get("password_hash")
-    if not stored_hash or not bcrypt.checkpw(req.current_password.encode("utf-8"), stored_hash.encode("utf-8")):
+
+    def check_pwd():
+        if not stored_hash:
+            return False
+        return bcrypt.checkpw(req.current_password.encode("utf-8"), stored_hash.encode("utf-8"))
+
+    is_valid = await run_in_threadpool(check_pwd)
+    if not is_valid:
         raise HTTPException(status_code=400, detail="Current password is incorrect")
 
-    new_hash = bcrypt.hashpw(req.new_password.encode("utf-8"), bcrypt.gensalt()).decode("utf-8")
-    update_farmer_password(conn, farmer_id, new_hash)
+    def hash_pwd():
+        return bcrypt.hashpw(req.new_password.encode("utf-8"), bcrypt.gensalt()).decode("utf-8")
+
+    new_hash = await run_in_threadpool(hash_pwd)
+
+    def update_pwd():
+        update_farmer_password(conn, farmer_id, new_hash)
+
+    await run_in_threadpool(update_pwd)
     return {"message": "Password updated successfully"}
 
 
 @app.post("/farmer/{farmer_id}/photo")
 async def upload_profile_photo(farmer_id: int, file: UploadFile = File(...)):
-    conn = get_connection()
-    farmer = get_farmer(conn, farmer_id)
+    conn = await run_in_threadpool(get_connection)
+    farmer = await run_in_threadpool(get_farmer, conn, farmer_id)
     if not farmer:
         raise HTTPException(status_code=404, detail="Farmer not found")
 
@@ -258,9 +277,13 @@ async def upload_profile_photo(farmer_id: int, file: UploadFile = File(...)):
     print(f"[photo upload] static dir: {UPLOADS_DIR.resolve()}")
 
     contents = await file.read()
-    try:
+
+    def _process_and_save():
         img = Image.open(io.BytesIO(contents)).convert("RGB")
         img.save(str(save_path), "JPEG", quality=85)
+
+    try:
+        await run_in_threadpool(_process_and_save)
     except Exception as exc:
         raise HTTPException(status_code=400, detail=f"Invalid image file: {exc}")
 
@@ -268,75 +291,91 @@ async def upload_profile_photo(farmer_id: int, file: UploadFile = File(...)):
         raise HTTPException(status_code=500, detail="File was not saved to disk")
 
     relative_path = f"uploads/profile_photos/{filename}"
-    update_farmer_photo(conn, farmer_id, relative_path)
+    await run_in_threadpool(update_farmer_photo, conn, farmer_id, relative_path)
     return {"profile_photo": relative_path}
 
 
 @app.post("/farmer/{farmer_id}/deactivate")
-def deactivate_farmer_endpoint(farmer_id: int):
+async def deactivate_farmer_endpoint(farmer_id: int):
     from database import deactivate_farmer
-    conn = get_connection()
-    farmer = get_farmer(conn, farmer_id)
-    if not farmer:
-        raise HTTPException(status_code=404, detail="Farmer not found")
-    
-    deactivate_farmer(conn, farmer_id)
-    return {"message": "Account deactivated successfully"}
+
+    def _do_deactivate():
+        conn = get_connection()
+        farmer = get_farmer(conn, farmer_id)
+        if not farmer:
+            raise HTTPException(status_code=404, detail="Farmer not found")
+        deactivate_farmer(conn, farmer_id)
+        return {"message": "Account deactivated successfully"}
+
+    return await run_in_threadpool(_do_deactivate)
 
 
 @app.patch("/farmer/{farmer_id}/notification-prefs")
-def update_notification_prefs_endpoint(farmer_id: int, req: NotificationPrefsRequest):
+async def update_notification_prefs_endpoint(farmer_id: int, req: NotificationPrefsRequest):
     from database import update_farmer_notification_prefs
-    conn = get_connection()
-    farmer = get_farmer(conn, farmer_id)
-    if not farmer:
-        raise HTTPException(status_code=404, detail="Farmer not found")
-    
-    prefs_str = json.dumps({
-        "weather": req.weather,
-        "disease": req.disease,
-        "general": req.general
-    })
-    update_farmer_notification_prefs(conn, farmer_id, prefs_str)
-    return {"message": "Notification preferences updated successfully"}
+
+    def _do_update():
+        conn = get_connection()
+        farmer = get_farmer(conn, farmer_id)
+        if not farmer:
+            raise HTTPException(status_code=404, detail="Farmer not found")
+        prefs_str = json.dumps({
+            "weather": req.weather,
+            "disease": req.disease,
+            "general": req.general
+        })
+        update_farmer_notification_prefs(conn, farmer_id, prefs_str)
+        return {"message": "Notification preferences updated successfully"}
+
+    return await run_in_threadpool(_do_update)
 
 
 @app.get("/weather/{farmer_id}")
-def get_weather(farmer_id: int):
-    conn = get_connection()
-    locations = get_locations_for_farmer(conn, farmer_id)
+async def get_weather(farmer_id: int):
+    def _fetch_db():
+        conn = get_connection()
+        locations = get_locations_for_farmer(conn, farmer_id)
+        return conn, locations
+
+    conn, locations = await run_in_threadpool(_fetch_db)
     if not locations:
         raise HTTPException(status_code=404, detail="Location not found for farmer")
-    
+
     loc = locations[0]
+
     try:
-        data = fetch_weather(loc["latitude"], loc["longitude"])
+        data = await run_in_threadpool(fetch_weather, loc["latitude"], loc["longitude"])
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to fetch weather: {e}")
-        
+
     cw = data.get("current_weather", {})
     daily = data.get("daily", {})
-    
+
     tmax = daily.get("temperature_2m_max", [None])[0]
     tmin = daily.get("temperature_2m_min", [None])[0]
     rain_prob = daily.get("precipitation_probability_max", [None])[0]
     code = cw.get("weathercode", 0)
-    
+
     warnings = []
     if tmax is not None and tmin is not None and rain_prob is not None:
         raw_warnings = _get_warnings(tmax, tmin, rain_prob, code)
         warnings = [{"level": w[0], "message": w[1]} for w in raw_warnings]
-        
+
         # Log weather warnings if they aren't duplicate and weather alerts are enabled
-        if should_send_notification(conn, farmer_id, "weather"):
-            for w in warnings:
-                already_sent = conn.execute(
-                        "SELECT 1 FROM notifications WHERE farmer_id = ? AND message = ? AND type = 'warning' AND sent_at > datetime('now', '-4 hours') LIMIT 1",
-                        (farmer_id, w["message"])
-                    ).fetchone()
-                if not already_sent:
-                    add_notification(conn, farmer_id, w["message"], "warning")
-        
+        def _log_warnings():
+            if should_send_notification(conn, farmer_id, "weather"):
+                for w in warnings:
+                    cursor = conn.cursor()
+                    cursor.execute(
+                            "SELECT 1 FROM notifications WHERE farmer_id = %s AND message = %s AND type = 'warning' AND sent_at > NOW() - INTERVAL '4 hours' LIMIT 1",
+                            (farmer_id, w["message"])
+                        )
+                    already_sent = cursor.fetchone()
+                    if not already_sent:
+                        add_notification(conn, farmer_id, w["message"], "warning")
+
+        await run_in_threadpool(_log_warnings)
+
     return {
         "current_weather": cw,
         "daily_forecast": daily,
@@ -345,28 +384,31 @@ def get_weather(farmer_id: int):
 
 
 @app.get("/crop-calendar/{farmer_id}")
-def get_crop_calendar(farmer_id: int):
-    conn = get_connection()
-    crops = get_crops_for_farmer(conn, farmer_id)
+async def get_crop_calendar(farmer_id: int):
+    def _fetch():
+        conn = get_connection()
+        return get_crops_for_farmer(conn, farmer_id)
+
+    crops = await run_in_threadpool(_fetch)
     if not crops:
         return {"crops": []}
-        
+
     today = date.today()
     results = []
-    
+
     for crop in crops:
         p_date_str = crop["planting_date"]
         if not p_date_str:
             continue
-            
+
         try:
             planting_date = datetime.strptime(p_date_str, "%Y-%m-%d").date()
         except ValueError:
             continue
-            
+
         days_since_planting = (today - planting_date).days
         stage_info = calculate_crop_stage(crop["crop_type"], days_since_planting)
-        
+
         results.append({
             "crop_id": crop["id"],
             "crop_type": crop["crop_type"],
@@ -375,18 +417,20 @@ def get_crop_calendar(farmer_id: int):
             "stage_info": stage_info,
             "farm_size": crop["farm_size"]
         })
-        
+
     return {"crops": results}
 
 @app.patch("/farmer/{farmer_id}/crop")
-def update_crop(farmer_id: int, req: CropUpdateRequest):
-    conn = get_connection()
-    farmer = get_farmer(conn, farmer_id)
-    if not farmer:
-        raise HTTPException(status_code=404, detail="Farmer not found")
-        
-    update_crop_for_farmer(conn, farmer_id, req.crop_type, req.planting_date, req.farm_size)
-    return {"message": "Crop updated successfully"}
+async def update_crop(farmer_id: int, req: CropUpdateRequest):
+    def _do_update():
+        conn = get_connection()
+        farmer = get_farmer(conn, farmer_id)
+        if not farmer:
+            raise HTTPException(status_code=404, detail="Farmer not found")
+        update_crop_for_farmer(conn, farmer_id, req.crop_type, req.planting_date, req.farm_size)
+        return {"message": "Crop updated successfully"}
+
+    return await run_in_threadpool(_do_update)
 
 
 @app.post("/disease-detection")
@@ -401,11 +445,10 @@ async def detect_disease(farmer_id: int | None = None, file: UploadFile = File(.
 
     MODAL_URL = "https://aliyanmanzoor--agrisense-disease-detection-detect.modal.run"
     try:
-        async with httpx.AsyncClient(timeout=30.0) as client:
+        async with httpx.AsyncClient(timeout=120.0) as client:  # 120s covers Modal cold-start
             resp = await client.post(
                 MODAL_URL,
-                content=contents,
-                headers={"Content-Type": "application/octet-stream"}
+                files={"file": (file.filename, contents, file.content_type or "image/jpeg")},
             )
             resp.raise_for_status()
             result = resp.json()
@@ -416,21 +459,24 @@ async def detect_disease(farmer_id: int | None = None, file: UploadFile = File(.
         raise HTTPException(status_code=500, detail="Failed to run disease detection")
 
     if farmer_id is not None:
-        conn = get_connection()
-        # Log disease alerts if enabled
-        if should_send_notification(conn, farmer_id, "disease"):
-            friendly_name = clean_disease_label(class_name)
-            is_healthy = "healthy" in class_name.lower()
+        def _log_disease():
+            conn = get_connection()
+            # Log disease alerts if enabled
+            if should_send_notification(conn, farmer_id, "disease"):
+                friendly_name = clean_disease_label(class_name)
+                is_healthy = "healthy" in class_name.lower()
 
-            if is_healthy:
-                msg = "Leaf scan complete: no disease detected"
-                notif_type = "info"
-            else:
-                confidence_pct = int(confidence * 100) if confidence <= 1.0 else int(confidence)
-                msg = f"Disease detected: {friendly_name} ({confidence_pct}% confidence)"
-                notif_type = "warning"
+                if is_healthy:
+                    msg = "Leaf scan complete: no disease detected"
+                    notif_type = "info"
+                else:
+                    confidence_pct = int(confidence * 100) if confidence <= 1.0 else int(confidence)
+                    msg = f"Disease detected: {friendly_name} ({confidence_pct}% confidence)"
+                    notif_type = "warning"
 
-            add_notification(conn, farmer_id, msg, notif_type)
+                add_notification(conn, farmer_id, msg, notif_type)
+
+        await run_in_threadpool(_log_disease)
 
     return {
         "class_name": class_name,
@@ -439,24 +485,26 @@ async def detect_disease(farmer_id: int | None = None, file: UploadFile = File(.
 
 
 @app.post("/yield-prediction")
-def predict_yield(req: YieldPredictionRequest):
-    crop_encoded = 0 if req.crop_type.strip().lower() == "wheat" else 1
-    area_encoded = 72
-    year = 2026
-    
-    features = [[
-        crop_encoded,
-        area_encoded,
-        year,
-        req.rainfall,
-        req.pesticides,
-        req.avg_temp
-    ]]
-    
-    model = load_yield_model()
-    raw_yield_hg_ha = model.predict(features)[0]
-    yield_kg_ha = raw_yield_hg_ha * 0.1
-    
+async def predict_yield(req: YieldPredictionRequest):
+    def _do_predict():
+        crop_encoded = 0 if req.crop_type.strip().lower() == "wheat" else 1
+        area_encoded = 72
+        year = 2026
+
+        features = [[
+            crop_encoded,
+            area_encoded,
+            year,
+            req.rainfall,
+            req.pesticides,
+            req.avg_temp
+        ]]
+
+        model = load_yield_model()
+        raw_yield_hg_ha = model.predict(features)[0]
+        return raw_yield_hg_ha * 0.1
+
+    yield_kg_ha = await run_in_threadpool(_do_predict)
     return {
         "yield_kg_ha": yield_kg_ha
     }
@@ -464,9 +512,12 @@ def predict_yield(req: YieldPredictionRequest):
 
 
 @app.get("/notifications/{farmer_id}")
-def get_notifications(farmer_id: int):
-    conn = get_connection()
-    notifications = get_notifications_for_farmer(conn, farmer_id)
+async def get_notifications(farmer_id: int):
+    def _fetch():
+        conn = get_connection()
+        return get_notifications_for_farmer(conn, farmer_id)
+
+    notifications = await run_in_threadpool(_fetch)
     return {"notifications": notifications}
 
 @app.get("/health")

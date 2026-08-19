@@ -78,32 +78,50 @@ const QUICK_ICONS = [
   },
 ];
 
+// Module-level cache for stale-while-revalidate pattern
+let cachedProfile = null;
+let cachedCropType = null;
+let cachedFarmerId = null;
+
 export default function DashboardPage({ farmerName, farmerId, onNavigate }) {
   const { t } = useTranslation();
-  const [cropType, setCropType] = useState(null);
-  const [profile, setProfile] = useState(null);
-  const [loadingCrop, setLoadingCrop] = useState(true);
+  const [cropType, setCropType] = useState(cachedFarmerId === farmerId ? cachedCropType : null);
+  const [profile, setProfile] = useState(cachedFarmerId === farmerId ? cachedProfile : null);
+  const [loadingCrop, setLoadingCrop] = useState(cachedFarmerId !== farmerId);
 
   useEffect(() => {
     if (!farmerId) {
       setLoadingCrop(false);
       return;
     }
-    setLoadingCrop(true);
+    
+    // Only show loading state if we don't have cached data
+    if (cachedFarmerId !== farmerId) {
+      setLoadingCrop(true);
+    }
+    
+    // Always fetch to get the freshest data in background (stale-while-revalidate)
     getFarmer(farmerId)
       .then((data) => {
         setProfile(data);
+        cachedProfile = data;
+        cachedFarmerId = farmerId;
+        
         // The farmer profile doesn't include crop_type directly;
         // fall back to the crop-calendar endpoint via a second call.
         return fetch(`${API_BASE}/crop-calendar/${farmerId}`)
           .then(r => r.json())
           .then(cal => {
             const first = cal?.crops?.[0];
-            if (first?.crop_type) setCropType(first.crop_type);
-            else setCropType('Wheat');
+            const cType = first?.crop_type || 'Wheat';
+            setCropType(cType);
+            cachedCropType = cType;
           });
       })
-      .catch(() => { setCropType('Wheat'); })
+      .catch(() => { 
+        setCropType('Wheat'); 
+        cachedCropType = 'Wheat';
+      })
       .finally(() => { setLoadingCrop(false); });
   }, [farmerId]);
 

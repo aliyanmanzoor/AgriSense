@@ -1,15 +1,8 @@
 """
 AgriSense -- Modal disease-detection service.
 
-Deploys the YOLOv8 maize disease classifier to Modal so inference runs
-in the cloud instead of on the local server. The model is bundled into
-the container image at build time.
-
 Deploy:
     modal deploy modal_disease.py
-
-Test locally:
-    modal run modal_disease.py
 """
 
 import io
@@ -18,13 +11,15 @@ from pathlib import Path
 import modal
 
 # ---------------------------------------------------------------------------
-# Image definition -- bundle the .pt model into the container at build time
+# Image definition
 # ---------------------------------------------------------------------------
 MODEL_LOCAL = str(Path(__file__).parent / "models" / "maize_disease_v2_best.pt")
 MODEL_REMOTE = "/app/models/maize_disease_v2_best.pt"
 
 image = (
     modal.Image.debian_slim(python_version="3.11")
+    # Install libGL so opencv-python (pulled by ultralytics) can load
+    .apt_install("libgl1", "libglib2.0-0")
     .pip_install(
         "ultralytics>=8.0.0",
         "pillow>=10.0.0",
@@ -72,14 +67,15 @@ class DiseaseClassifier:
 
 
 # ---------------------------------------------------------------------------
-# FastAPI web endpoint -- accepts multipart file upload OR raw bytes
+# FastAPI web endpoint
 # ---------------------------------------------------------------------------
+import fastapi
+
 @app.function()
 @modal.fastapi_endpoint(method="POST")
-async def detect(request) -> dict:
+async def detect(request: fastapi.Request) -> dict:
     """
-    POST endpoint. Accepts multipart/form-data with field 'file',
-    or raw bytes body (application/octet-stream).
+    POST endpoint. Accepts multipart/form-data with field 'file'.
     Returns {"class_name": str, "confidence": float}.
     """
     from fastapi import HTTPException
@@ -99,12 +95,13 @@ async def detect(request) -> dict:
         raise HTTPException(status_code=400, detail="Empty image body")
 
     classifier = DiseaseClassifier()
-    result = classifier.predict.remote(image_bytes)
+    # Use .aio() for proper async invocation inside an async FastAPI handler
+    result = await classifier.predict.remote.aio(image_bytes)
     return result
 
 
 # ---------------------------------------------------------------------------
-# Local entrypoint for smoke-test: modal run modal_disease.py
+# Local entrypoint: modal run modal_disease.py
 # ---------------------------------------------------------------------------
 @app.local_entrypoint()
 def main():
