@@ -10,6 +10,8 @@ from datetime import datetime, date
 from pathlib import Path
 import httpx
 import json
+import io
+from PIL import Image
 
 from database import (
     get_connection,
