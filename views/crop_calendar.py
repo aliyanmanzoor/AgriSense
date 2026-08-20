@@ -1,10 +1,6 @@
 """
-Crop Calendar page — crop stage tracking and growth timeline calculation.
+Crop Calendar logic for the FastAPI backend.
 """
-
-from datetime import datetime, date
-import streamlit as st
-from database import get_connection, get_all_farmers, get_crops_for_farmer
 
 # ---------------------------------------------------------------------------
 # Stage definitions (days after planting)
@@ -34,7 +30,6 @@ DEFAULT_STAGES = [
     ("Flowering & Grain Development", 60, 90),
     ("Maturity / Harvest Preparation", 90, 120),
 ]
-
 
 def calculate_crop_stage(crop_type: str, days_since_planting: int) -> dict:
     """Calculate current stage, days into stage, next stage, and progress."""
@@ -96,95 +91,3 @@ def calculate_crop_stage(crop_type: str, days_since_planting: int) -> dict:
         "max_days": max_days,
         "stages_list": stages,
     }
-
-
-def render():
-    st.header("📅 Crop Calendar")
-    conn = get_connection()
-
-    selected_id = st.session_state.get("farmer_id")
-    if not selected_id:
-        st.error("You must be logged in to view crop calendar data.")
-        return
-
-    st.success(f"Showing data for {st.session_state.get('farmer_name')}")
-
-    crops = get_crops_for_farmer(conn, selected_id)
-    if not crops:
-        st.warning("This farmer has no crops recorded.")
-        return
-
-    today = date.today()
-
-    for crop in crops:
-        crop_type = crop["crop_type"]
-        p_date_str = crop["planting_date"]
-        farm_size = crop["farm_size"]
-
-        st.subheader(f"🌱 Crop: {crop_type}")
-
-        if not p_date_str:
-            st.info("Planting date is not specified for this crop.")
-            continue
-
-        try:
-            planting_date = datetime.strptime(p_date_str, "%Y-%m-%d").date()
-        except ValueError:
-            st.error(f"Invalid planting date format: {p_date_str}")
-            continue
-
-        days_since_planting = (today - planting_date).days
-        stage_info = calculate_crop_stage(crop_type, days_since_planting)
-
-        # Overview Metrics
-        col1, col2, col3 = st.columns(3)
-        col1.metric("Planting Date", p_date_str)
-        col2.metric("Days Since Planting", f"{days_since_planting} days" if days_since_planting >= 0 else "Scheduled")
-        col3.metric("Farm Size", f"{farm_size} acres" if farm_size else "N/A")
-
-        st.markdown("---")
-
-        status = stage_info["status"]
-
-        if status == "scheduled":
-            st.info(f"⏳ Planting is scheduled to start in **{stage_info['days_until_planting']} days**.")
-
-        elif status == "ready_for_harvest":
-            st.success("🌾 **Crop should be ready for harvest!**")
-            st.progress(1.0)
-            st.write(
-                f"This crop reached full maturity around **{stage_info['max_days']} days** after planting "
-                f"({stage_info['days_past']} days ago)."
-            )
-
-        elif status == "in_progress":
-            # Progress Bar
-            st.markdown(f"**Overall Progress to Maturity ({int(stage_info['progress'] * 100)}%)**")
-            st.progress(stage_info["progress"])
-
-            # Stage summary callouts
-            c1, c2 = st.columns(2)
-
-            with c1:
-                st.markdown("### 📍 Current Stage")
-                st.markdown(f"**{stage_info['current_stage']}**")
-                st.info(f"You are on **day {stage_info['days_in_stage']}** of this stage.")
-
-            with c2:
-                st.markdown("### ⏭️ Next Stage")
-                if stage_info["next_stage"]:
-                    st.markdown(f"**{stage_info['next_stage']}**")
-                    st.success(f"Starts in **{stage_info['days_to_next']} days**.")
-                else:
-                    st.markdown("**Harvest / Full Maturity**")
-                    st.success(f"Expected in **{stage_info['days_to_next']} days**.")
-
-            st.markdown("---")
-
-            # Timeline overview breakdown
-            with st.expander("Show Stage Timeline", expanded=False):
-                for s_name, s_start, s_end in stage_info["stages_list"]:
-                    is_current = s_name == stage_info["current_stage"]
-                    prefix = "👉 " if is_current else "• "
-                    highlight = f"**{s_name}**" if is_current else s_name
-                    st.markdown(f"{prefix}{highlight}: Days {s_start} – {s_end}")
